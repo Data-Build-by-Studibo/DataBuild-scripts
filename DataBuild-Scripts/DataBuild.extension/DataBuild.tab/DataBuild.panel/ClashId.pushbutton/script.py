@@ -2,7 +2,7 @@
 
 __title__ = "ClashOverview"
 __author__ = "Sean De Gent"
-__doc__ = """Version = 1.2
+__doc__ = """Version = 1.3
 Date    = 22-09-26
 _____________________________________________________________________
 Description:
@@ -11,8 +11,12 @@ O.b.v. de geselecteerde excel-file, zal men elementen zichtbaar maken die in con
 _____________________________________________________________
 Last update:
 
-- [22-09-26] 1.2 OpenFileDialog koppelt nu aan het Revit-hoofdvenster (owner),
-                  zodat het venster niet meer onzichtbaar achter Revit kan opengaan.
+- [22-09-26] 1.3 WinForms (OpenFileDialog/MessageBox) volledig vervangen door
+                  Revit's eigen FileOpenDialog en TaskDialog - WinForms bleek
+                  in deze omgeving niets zichtbaar te renderen. Ook het volledige
+                  script nu in 1 try/except, zodat elke fout gegarandeerd
+                  zichtbaar wordt getoond i.p.v. stil te falen.
+- [22-09-26] 1.2 OpenFileDialog owner-venster toegevoegd (bleek niet de oorzaak).
 - [22-09-26] 1.1 xlrd verwijderd, xlsx wordt nu met zipfile + xml (stdlib) gelezen.
 - [19-09-23] 1.0 RELEASE
 
@@ -23,12 +27,11 @@ _____________________________________________________________________
 #-----------------------IMPORTS-------------------------------------------------------
 
 import clr
-clr.AddReference("System.Windows.Forms")
-from System.Windows.Forms import OpenFileDialog, DialogResult, MessageBox, IWin32Window
-from System.Collections.Generic import List
-
 clr.AddReference("RevitAPI")
+clr.AddReference("RevitAPIUI")
 from Autodesk.Revit.DB import *
+from Autodesk.Revit.UI import TaskDialog, FileOpenDialog, ItemSelectionDialogResult
+from System.Collections.Generic import List
 
 import zipfile
 import re
@@ -38,18 +41,6 @@ NS = {
     'main': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main',
     'rel': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
 }
-
-
-class RevitWindowHandle(IWin32Window):
-    """Wrapper zodat WinForms-dialoogvensters gekoppeld kunnen worden aan het
-    Revit-hoofdvenster als 'owner' - zo verschijnen ze altijd zichtbaar vooraan,
-    in plaats van mogelijks onzichtbaar achter Revit te openen."""
-    def __init__(self, handle):
-        self._handle = handle
-
-    @property
-    def Handle(self):
-        return self._handle
 
 
 def _split_cell_ref(ref):
@@ -113,45 +104,44 @@ def main():
     uidoc = uiapp.ActiveUIDocument
     doc = uidoc.Document
 
-    revit_owner = RevitWindowHandle(uiapp.MainWindowHandle)
+    # ----- Bestand selecteren via Revit's EIGEN dialoogvenster (geen WinForms) -----
+    file_dialog = FileOpenDialog("Excel bestanden (*.xlsx)|*.xlsx")
+    file_dialog.Title = "Selecteer een Excel-bestand om gegevens te importeren"
+    dialog_result = file_dialog.Show()
 
-    open_file_dialog = OpenFileDialog()
-    open_file_dialog.Filter = "Excel Files (*.xlsx)|*.xlsx"
-    open_file_dialog.Title = "Selecteer een Excel-bestand om gegevens te importeren"
-    result = open_file_dialog.ShowDialog(revit_owner)   # <-- owner meegegeven
-
-    if result != DialogResult.OK:
-        MessageBox.Show("Geen bestand geselecteerd. Het script wordt afgebroken.")
+    if dialog_result != ItemSelectionDialogResult.Confirmed:
+        TaskDialog.Show("Data Build", "Geen bestand geselecteerd. Het script wordt afgebroken.")
         return
 
-    excel_file_path = open_file_dialog.FileName
+    model_path = file_dialog.GetSelectedModelPath()
+    excel_file_path = ModelPathUtils.ConvertModelPathToUserVisiblePath(model_path)
 
-    try:
-        raw_values = read_xlsx_column(excel_file_path, "ID to Revit", "C", 2)
-        ids_to_show = [ElementId(int(float(v))) for v in raw_values]
+    # ----- Excel inlezen en elementen tonen/verbergen -----
+    raw_values = read_xlsx_column(excel_file_path, "ID to Revit", "C", 2)
+    ids_to_show = [ElementId(int(float(v))) for v in raw_values]
 
-        all_elements = FilteredElementCollector(doc, uidoc.ActiveView.Id).ToElementIds()
-        ids_to_hide = [id for id in all_elements if id not in ids_to_show]
+    all_elements = FilteredElementCollector(doc, uidoc.ActiveView.Id).ToElementIds()
+    ids_to_hide = [id for id in all_elements if id not in ids_to_show]
 
-        t = Transaction(doc, "Tijdelijk elementen verbergen")
-        t.Start()
+    t = Transaction(doc, "Tijdelijk elementen verbergen")
+    t.Start()
 
-        elements_to_hide_collection = List[ElementId]()
-        current_view = uidoc.ActiveView
+    elements_to_hide_collection = List[ElementId]()
+    current_view = uidoc.ActiveView
 
-        for id in ids_to_hide:
-            element = doc.GetElement(id)
-            if element.CanBeHidden(current_view):
-                elements_to_hide_collection.Add(id)
-            else:
-                pass
+    for id in ids_to_hide:
+        element = doc.GetElement(id)
+        if element.CanBeHidden(current_view):
+            elements_to_hide_collection.Add(id)
 
-        current_view.HideElementsTemporary(elements_to_hide_collection)
-        t.Commit()
+    current_view.HideElementsTemporary(elements_to_hide_collection)
+    t.Commit()
 
-    except Exception as e:
-        MessageBox.Show("Fout bij het importeren van gegevens: {0}".format(str(e)))
+    TaskDialog.Show("Data Build", "Klaar! {0} elementen tijdelijk verborgen.".format(elements_to_hide_collection.Count))
 
 
-if __name__ == "__main__":
+# ----- Alles in 1 try/except, zodat een fout altijd zichtbaar wordt -----
+try:
     main()
+except Exception as e:
+    TaskDialog.Show("Data Build - Scriptfout", "Fout bij het importeren van gegevens:\n{0}".format(str(e)))
