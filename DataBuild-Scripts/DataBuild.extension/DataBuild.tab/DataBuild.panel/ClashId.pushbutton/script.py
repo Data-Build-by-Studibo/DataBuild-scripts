@@ -1,147 +1,57 @@
 # -*- coding: utf-8 -*-
-
-__title__ = "ClashOverview"
-__author__ = "Sean De Gent"
-__doc__ = """Version = 1.3
-Date    = 22-09-26
-_____________________________________________________________________
-Description:
-
-O.b.v. de geselecteerde excel-file, zal men elementen zichtbaar maken die in conflict zijn.
-_____________________________________________________________
-Last update:
-
-- [22-09-26] 1.3 WinForms (OpenFileDialog/MessageBox) volledig vervangen door
-                  Revit's eigen FileOpenDialog en TaskDialog - WinForms bleek
-                  in deze omgeving niets zichtbaar te renderen. Ook het volledige
-                  script nu in 1 try/except, zodat elke fout gegarandeerd
-                  zichtbaar wordt getoond i.p.v. stil te falen.
-- [22-09-26] 1.2 OpenFileDialog owner-venster toegevoegd (bleek niet de oorzaak).
-- [22-09-26] 1.1 xlrd verwijderd, xlsx wordt nu met zipfile + xml (stdlib) gelezen.
-- [19-09-23] 1.0 RELEASE
-
-author  = Sean De Gent i.o.v. BimPlan
-_____________________________________________________________________
-"""
-
-#-----------------------IMPORTS-------------------------------------------------------
+# ================================================================
+# DIAGNOSTISCHE VERSIE - tijdelijk, enkel om te zien waar het vastloopt.
+# Elke stap toont een eigen venstertje ("Checkpoint N"). Klik telkens op
+# "Sluiten" om naar de volgende stap te gaan. Meld aan Claude tot welk
+# checkpoint-nummer je geraakt (of welke foutmelding je krijgt).
+# ================================================================
 
 import clr
+
 clr.AddReference("RevitAPI")
 clr.AddReference("RevitAPIUI")
+
+from Autodesk.Revit.UI import TaskDialog
+
+TaskDialog.Show("Data Build - Debug", "Checkpoint 1: script is gestart, RevitAPI/RevitAPIUI geladen.")
+
 from Autodesk.Revit.DB import *
-from Autodesk.Revit.UI import TaskDialog, FileOpenDialog, ItemSelectionDialogResult
+TaskDialog.Show("Data Build - Debug", "Checkpoint 2: Autodesk.Revit.DB geimporteerd.")
+
+from Autodesk.Revit.UI import FileOpenDialog, ItemSelectionDialogResult
+TaskDialog.Show("Data Build - Debug", "Checkpoint 3: FileOpenDialog/ItemSelectionDialogResult geimporteerd.")
+
 from System.Collections.Generic import List
+TaskDialog.Show("Data Build - Debug", "Checkpoint 4: System.Collections.Generic geimporteerd.")
 
 import zipfile
+TaskDialog.Show("Data Build - Debug", "Checkpoint 5: zipfile geimporteerd.")
+
 import re
 import xml.etree.ElementTree as ET
+TaskDialog.Show("Data Build - Debug", "Checkpoint 6: re + xml.etree.ElementTree geimporteerd.")
 
-NS = {
-    'main': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main',
-    'rel': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
-}
+uiapp = __revit__
+TaskDialog.Show("Data Build - Debug", "Checkpoint 7: __revit__ opgehaald.")
 
+uidoc = uiapp.ActiveUIDocument
+doc = uidoc.Document
+TaskDialog.Show("Data Build - Debug", "Checkpoint 8: actief document = {0}".format(doc.Title))
 
-def _split_cell_ref(ref):
-    m = re.match(r'([A-Z]+)(\d+)', ref)
-    return m.group(1), int(m.group(2))
+file_dialog = FileOpenDialog("Excel bestanden (*.xlsx)|*.xlsx")
+TaskDialog.Show("Data Build - Debug", "Checkpoint 9: FileOpenDialog-object aangemaakt.")
 
+file_dialog.Title = "Selecteer een Excel-bestand om gegevens te importeren"
+TaskDialog.Show("Data Build - Debug", "Checkpoint 10: titel ingesteld. Het bestandsvenster wordt nu geopend...")
 
-def read_xlsx_column(path, sheet_name, column_letter, start_row):
-    with zipfile.ZipFile(path) as z:
-        wb_xml = ET.fromstring(z.read('xl/workbook.xml'))
-        sheet_rid = None
-        for sheet in wb_xml.find('main:sheets', NS):
-            if sheet.get('name') == sheet_name:
-                sheet_rid = sheet.get('{%s}id' % NS['rel'])
-                break
-        if sheet_rid is None:
-            raise Exception("Tabblad '{0}' niet gevonden in de excel.".format(sheet_name))
+dialog_result = file_dialog.Show()
+TaskDialog.Show("Data Build - Debug", "Checkpoint 11: bestandsvenster gesloten. Resultaat = {0}".format(dialog_result))
 
-        rels_xml = ET.fromstring(z.read('xl/_rels/workbook.xml.rels'))
-        sheet_target = None
-        for rel in rels_xml:
-            if rel.get('Id') == sheet_rid:
-                sheet_target = rel.get('Target')
-                break
-        if sheet_target is None:
-            raise Exception("Kon het tabblad-bestand niet terugvinden in de excel.")
-
-        sheet_path = sheet_target if sheet_target.startswith('xl/') else 'xl/' + sheet_target
-        sheet_xml = ET.fromstring(z.read(sheet_path))
-
-        shared_strings = []
-        if 'xl/sharedStrings.xml' in z.namelist():
-            ss_xml = ET.fromstring(z.read('xl/sharedStrings.xml'))
-            for si in ss_xml.findall('main:si', NS):
-                texts = si.findall('.//main:t', NS)
-                shared_strings.append(''.join(t.text or '' for t in texts))
-
-        values = []
-        sheet_data = sheet_xml.find('main:sheetData', NS)
-        for row in sheet_data:
-            row_num = int(row.get('r'))
-            if row_num < start_row:
-                continue
-            for cell in row:
-                ref = cell.get('r')
-                col, _ = _split_cell_ref(ref)
-                if col != column_letter:
-                    continue
-                v = cell.find('main:v', NS)
-                if v is None or v.text is None:
-                    continue
-                if cell.get('t') == 's':
-                    values.append(shared_strings[int(v.text)])
-                else:
-                    values.append(v.text)
-    return values
-
-
-def main():
-    uiapp = __revit__
-    uidoc = uiapp.ActiveUIDocument
-    doc = uidoc.Document
-
-    # ----- Bestand selecteren via Revit's EIGEN dialoogvenster (geen WinForms) -----
-    file_dialog = FileOpenDialog("Excel bestanden (*.xlsx)|*.xlsx")
-    file_dialog.Title = "Selecteer een Excel-bestand om gegevens te importeren"
-    dialog_result = file_dialog.Show()
-
-    if dialog_result != ItemSelectionDialogResult.Confirmed:
-        TaskDialog.Show("Data Build", "Geen bestand geselecteerd. Het script wordt afgebroken.")
-        return
-
+if dialog_result != ItemSelectionDialogResult.Confirmed:
+    TaskDialog.Show("Data Build - Debug", "Geen bestand gekozen (of geannuleerd). Script stopt hier normaal.")
+else:
     model_path = file_dialog.GetSelectedModelPath()
     excel_file_path = ModelPathUtils.ConvertModelPathToUserVisiblePath(model_path)
+    TaskDialog.Show("Data Build - Debug", "Checkpoint 12: geselecteerd bestand = {0}".format(excel_file_path))
 
-    # ----- Excel inlezen en elementen tonen/verbergen -----
-    raw_values = read_xlsx_column(excel_file_path, "ID to Revit", "C", 2)
-    ids_to_show = [ElementId(int(float(v))) for v in raw_values]
-
-    all_elements = FilteredElementCollector(doc, uidoc.ActiveView.Id).ToElementIds()
-    ids_to_hide = [id for id in all_elements if id not in ids_to_show]
-
-    t = Transaction(doc, "Tijdelijk elementen verbergen")
-    t.Start()
-
-    elements_to_hide_collection = List[ElementId]()
-    current_view = uidoc.ActiveView
-
-    for id in ids_to_hide:
-        element = doc.GetElement(id)
-        if element.CanBeHidden(current_view):
-            elements_to_hide_collection.Add(id)
-
-    current_view.HideElementsTemporary(elements_to_hide_collection)
-    t.Commit()
-
-    TaskDialog.Show("Data Build", "Klaar! {0} elementen tijdelijk verborgen.".format(elements_to_hide_collection.Count))
-
-
-# ----- Alles in 1 try/except, zodat een fout altijd zichtbaar wordt -----
-try:
-    main()
-except Exception as e:
-    TaskDialog.Show("Data Build - Scriptfout", "Fout bij het importeren van gegevens:\n{0}".format(str(e)))
+TaskDialog.Show("Data Build - Debug", "EINDE: het volledige script is doorlopen zonder crash.")
