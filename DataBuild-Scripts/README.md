@@ -8,8 +8,8 @@ DataBuild.extension/
   DataBuild.tab/
     DataBuild.panel/
       Script.pushbutton/
-        script.py       <- de eigenlijke python-code
-        bundle.yaml      <- titel/tooltip (optioneel, voor later gebruik)
+        script.py       
+        bundle.yaml     
 ```
 
 - **.extension** = de hele plugin-inhoud
