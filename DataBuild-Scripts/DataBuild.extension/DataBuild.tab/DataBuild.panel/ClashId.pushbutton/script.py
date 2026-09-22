@@ -142,3 +142,4 @@ else:
  
     except Exception as e:
         TaskDialog.Show("Data Build - Scriptfout", "Fout bij het importeren van gegevens:\n{0}".format(str(e)))
+ 
