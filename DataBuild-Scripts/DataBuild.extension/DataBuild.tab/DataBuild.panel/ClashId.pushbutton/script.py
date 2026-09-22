@@ -64,7 +64,12 @@ def read_xlsx_column(path, sheet_name, column_letter, start_row):
         if sheet_target is None:
             raise Exception("Kon het tabblad-bestand niet terugvinden in de excel.")
  
-        sheet_path = sheet_target if sheet_target.startswith('xl/') else 'xl/' + sheet_target
+        if sheet_target.startswith('/'):
+            sheet_path = sheet_target.lstrip('/')
+        elif sheet_target.startswith('xl/'):
+            sheet_path = sheet_target
+        else:
+            sheet_path = 'xl/' + sheet_target
         sheet_xml = ET.fromstring(z.read(sheet_path))
  
         shared_strings = []
