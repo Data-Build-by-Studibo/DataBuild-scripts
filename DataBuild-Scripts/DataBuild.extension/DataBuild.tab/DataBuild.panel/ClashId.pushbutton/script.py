@@ -2,7 +2,7 @@
 
 __title__ = "ClashOverview"
 __author__ = "Sean De Gent"
-__doc__ = """Version = 1.1
+__doc__ = """Version = 1.2
 Date    = 22-09-26
 _____________________________________________________________________
 Description:
@@ -11,9 +11,9 @@ O.b.v. de geselecteerde excel-file, zal men elementen zichtbaar maken die in con
 _____________________________________________________________
 Last update:
 
-- [22-09-26] 1.1 xlrd verwijderd. Xlsx wordt nu rechtstreeks uitgelezen met de
-                  Python-standaardbibliotheek (zipfile + xml), zonder externe
-                  dependencies. xlrd ondersteunde .xlsx toch al niet meer.
+- [22-09-26] 1.2 OpenFileDialog koppelt nu aan het Revit-hoofdvenster (owner),
+                  zodat het venster niet meer onzichtbaar achter Revit kan opengaan.
+- [22-09-26] 1.1 xlrd verwijderd, xlsx wordt nu met zipfile + xml (stdlib) gelezen.
 - [19-09-23] 1.0 RELEASE
 
 author  = Sean De Gent i.o.v. BimPlan
@@ -24,7 +24,7 @@ _____________________________________________________________________
 
 import clr
 clr.AddReference("System.Windows.Forms")
-from System.Windows.Forms import OpenFileDialog, DialogResult, MessageBox
+from System.Windows.Forms import OpenFileDialog, DialogResult, MessageBox, IWin32Window
 from System.Collections.Generic import List
 
 clr.AddReference("RevitAPI")
@@ -40,20 +40,25 @@ NS = {
 }
 
 
+class RevitWindowHandle(IWin32Window):
+    """Wrapper zodat WinForms-dialoogvensters gekoppeld kunnen worden aan het
+    Revit-hoofdvenster als 'owner' - zo verschijnen ze altijd zichtbaar vooraan,
+    in plaats van mogelijks onzichtbaar achter Revit te openen."""
+    def __init__(self, handle):
+        self._handle = handle
+
+    @property
+    def Handle(self):
+        return self._handle
+
+
 def _split_cell_ref(ref):
-    """'C2' -> ('C', 2)"""
     m = re.match(r'([A-Z]+)(\d+)', ref)
     return m.group(1), int(m.group(2))
 
 
 def read_xlsx_column(path, sheet_name, column_letter, start_row):
-    """
-    Leest 1 kolom van 1 tabblad uit een .xlsx-bestand, zonder externe
-    bibliotheken. Werkt rechtstreeks op de XML/ZIP-structuur van xlsx.
-    Geeft een lijst van tekstwaarden terug (nog niet omgezet naar getal).
-    """
     with zipfile.ZipFile(path) as z:
-        # 1. Zoek in workbook.xml het tabblad met de juiste naam -> relationship-id
         wb_xml = ET.fromstring(z.read('xl/workbook.xml'))
         sheet_rid = None
         for sheet in wb_xml.find('main:sheets', NS):
@@ -63,7 +68,6 @@ def read_xlsx_column(path, sheet_name, column_letter, start_row):
         if sheet_rid is None:
             raise Exception("Tabblad '{0}' niet gevonden in de excel.".format(sheet_name))
 
-        # 2. Zoek via workbook.xml.rels welk intern bestand bij dat tabblad hoort
         rels_xml = ET.fromstring(z.read('xl/_rels/workbook.xml.rels'))
         sheet_target = None
         for rel in rels_xml:
@@ -76,7 +80,6 @@ def read_xlsx_column(path, sheet_name, column_letter, start_row):
         sheet_path = sheet_target if sheet_target.startswith('xl/') else 'xl/' + sheet_target
         sheet_xml = ET.fromstring(z.read(sheet_path))
 
-        # 3. Eventuele gedeelde tekststrings inladen (nodig als een cel type='s' heeft)
         shared_strings = []
         if 'xl/sharedStrings.xml' in z.namelist():
             ss_xml = ET.fromstring(z.read('xl/sharedStrings.xml'))
@@ -84,7 +87,6 @@ def read_xlsx_column(path, sheet_name, column_letter, start_row):
                 texts = si.findall('.//main:t', NS)
                 shared_strings.append(''.join(t.text or '' for t in texts))
 
-        # 4. Doorloop alle rijen en pak enkel de gevraagde kolom
         values = []
         sheet_data = sheet_xml.find('main:sheetData', NS)
         for row in sheet_data:
@@ -107,14 +109,16 @@ def read_xlsx_column(path, sheet_name, column_letter, start_row):
 
 
 def main():
-    uidoc = __revit__.ActiveUIDocument
+    uiapp = __revit__
+    uidoc = uiapp.ActiveUIDocument
     doc = uidoc.Document
 
-    # Vraag de gebruiker om het Excel-bestand te selecteren
+    revit_owner = RevitWindowHandle(uiapp.MainWindowHandle)
+
     open_file_dialog = OpenFileDialog()
     open_file_dialog.Filter = "Excel Files (*.xlsx)|*.xlsx"
     open_file_dialog.Title = "Selecteer een Excel-bestand om gegevens te importeren"
-    result = open_file_dialog.ShowDialog()
+    result = open_file_dialog.ShowDialog(revit_owner)   # <-- owner meegegeven
 
     if result != DialogResult.OK:
         MessageBox.Show("Geen bestand geselecteerd. Het script wordt afgebroken.")
@@ -123,17 +127,12 @@ def main():
     excel_file_path = open_file_dialog.FileName
 
     try:
-        # Kolom C = 3de kolom, rijen vanaf 2 (rij 1 = headers)
         raw_values = read_xlsx_column(excel_file_path, "ID to Revit", "C", 2)
         ids_to_show = [ElementId(int(float(v))) for v in raw_values]
 
-        # Verzamel alle elementen in de huidige weergave
         all_elements = FilteredElementCollector(doc, uidoc.ActiveView.Id).ToElementIds()
-
-        # Elementen die niet in de lijst staan, moeten verborgen worden
         ids_to_hide = [id for id in all_elements if id not in ids_to_show]
 
-        # Start een transactie om de zichtbaarheid van elementen aan te passen
         t = Transaction(doc, "Tijdelijk elementen verbergen")
         t.Start()
 
