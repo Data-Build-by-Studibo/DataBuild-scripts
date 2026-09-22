@@ -7,7 +7,7 @@ volgens een boomstructuur (vergelijkbaar met pyRevit):
 DataBuild.extension/
   DataBuild.tab/
     DataBuild.panel/
-      TestScript.pushbutton/
+      Script.pushbutton/
         script.py       <- de eigenlijke python-code
         bundle.yaml      <- titel/tooltip (optioneel, voor later gebruik)
 ```
@@ -24,4 +24,3 @@ https://raw.githubusercontent.com/<gebruiker>/DataBuild-Scripts/main/DataBuild.e
 ```
 
 Nieuwe knoppen toevoegen = gewoon een nieuwe `.pushbutton`-map aanmaken met een `script.py`.
-(In een volgende stap kan de plugin automatisch de hele boomstructuur inlezen i.p.v. één vast pad.)
