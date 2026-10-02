@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
- 
+
 import io
+import json
 import os
 import re
 import tempfile
@@ -9,10 +10,14 @@ import clr
 clr.AddReference("RevitAPI")
 clr.AddReference("RevitAPIUI")
 clr.AddReference("System")
+clr.AddReference("System.Windows.Forms")
+clr.AddReference("System.Drawing")
  
 from System.Collections.Generic import List
 from Autodesk.Revit import DB
 from Autodesk.Revit.UI import TaskDialog, TaskDialogCommandLinkId, TaskDialogResult
+import System.Windows.Forms as WF
+import System.Drawing as SD
  
 BIC = DB.BuiltInCategory
 TITLE = "Openings - Host + Nummering"
@@ -56,9 +61,14 @@ CONFIG = {
     "ask_confirmation": True,
 }
  
-LINK_RULES = [
+# Rollen voor gelinkte modellen. De gebruiker kiest per rol welke link(s)
+# erbij horen. 'hint' = tekst in de linknaam die de eerste keer automatisch
+# aangevinkt wordt (daarna onthoudt het script de keuze per project).
+ROLE_RULES = [
     {
-        "link_name_contains": "STR",
+        "role": "STRUCTURE",
+        "label": "Structuurmodel(len)",
+        "hint": ["STRUCTURE", "STAB", "STR"],
         "categories": [BIC.OST_Walls, BIC.OST_StructuralFraming,
                        BIC.OST_StructuralColumns, BIC.OST_StructuralFoundation,
                        BIC.OST_Floors],
@@ -66,13 +76,19 @@ LINK_RULES = [
         "exclude_workset_contains": [],
     },
     {
-        "link_name_contains": "ARC",
+        "role": "ARCHITECTURE",
+        "label": "Architectuurmodel(len)",
+        "hint": ["ARCHITECTURE", "ARCH", "ARC"],
         "categories": [BIC.OST_Walls, BIC.OST_StructuralFraming,
                        BIC.OST_StructuralColumns, BIC.OST_GenericModel],
         "exclude_type_name_contains": [],
         "exclude_workset_contains": [u"Stabilité"],
     },
 ]
+ 
+# Hier wordt per project de laatste linkkeuze bewaard
+MEMORY_FILE = os.path.join(os.environ.get("APPDATA", tempfile.gettempdir()),
+                           "DataBuild", "openings_links.json")
  
 CATEGORY_CODES = {
     BIC.OST_Walls: "WA",
@@ -343,15 +359,149 @@ def passes_rule(element, rule):
     return True
  
  
-def matching_links():
-    result = []
+# ---------- Linkkeuze: geheugen per project ----------
+def project_key():
+    """Unieke sleutel per project (centraal model indien workshared)."""
+    try:
+        if doc.IsWorkshared:
+            mp = doc.GetWorksharingCentralModelPath()
+            if mp is not None:
+                return DB.ModelPathUtils.ConvertModelPathToUserVisiblePath(mp)
+    except Exception:
+        pass
+    return doc.PathName or doc.Title
+ 
+ 
+def load_memory():
+    try:
+        with io.open(MEMORY_FILE, "r", encoding="utf-8") as f:
+            return json.load(f).get(project_key())
+    except Exception:
+        return None
+ 
+ 
+def save_memory(choice):
+    try:
+        data = {}
+        if os.path.exists(MEMORY_FILE):
+            with io.open(MEMORY_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        data[project_key()] = choice
+        folder = os.path.dirname(MEMORY_FILE)
+        if not os.path.isdir(folder):
+            os.makedirs(folder)
+        with io.open(MEMORY_FILE, "w", encoding="utf-8") as f:
+            f.write(u"{}".format(json.dumps(data, indent=2)))
+    except Exception:
+        pass  # geheugen is een extraatje, nooit een reden om te stoppen
+ 
+ 
+# ---------- Linkkeuze: dialoog ----------
+def pick_links():
+    """Laat de gebruiker per rol links kiezen.
+    Geeft [(linkinstance, regel), ...] terug, of None bij Annuleren."""
+    loaded, unloaded = [], 0
     for li in DB.FilteredElementCollector(doc).OfClass(DB.RevitLinkInstance):
         if li.GetLinkDocument() is None:
-            continue
-        name = get_name(li)
-        for rule in LINK_RULES:
-            if rule["link_name_contains"] in name:
-                result.append((li, rule))
+            unloaded += 1
+        else:
+            loaded.append(li)
+    if not loaded:
+        return []
+    loaded.sort(key=lambda li: link_file_name(li).lower())
+ 
+    # Label per link; bij meerdere instances van dezelfde link het ID erbij
+    names = [link_file_name(li) for li in loaded]
+    labels = []
+    for li, n in zip(loaded, names):
+        labels.append(n if names.count(n) == 1
+                      else u"{}  (instance {})".format(n, id_value(li.Id)))
+ 
+    memory = load_memory()  # {"STRUCTURE": [labels], ...} of None
+ 
+    form = WF.Form()
+    form.Text = TITLE + " - gelinkte modellen"
+    form.StartPosition = WF.FormStartPosition.CenterScreen
+    form.AutoScaleMode = WF.AutoScaleMode.Dpi
+    form.Size = SD.Size(560, 520)
+    form.MinimumSize = SD.Size(420, 380)
+    form.MinimizeBox = False
+    form.MaximizeBox = False
+    form.ShowInTaskbar = False
+    form.TopMost = True
+ 
+    layout = WF.TableLayoutPanel()
+    layout.Dock = WF.DockStyle.Fill
+    layout.Padding = WF.Padding(10)
+    layout.ColumnCount = 1
+ 
+    def add_row(ctrl, size_type, value=0):
+        layout.RowStyles.Add(WF.RowStyle(size_type, value))
+        layout.Controls.Add(ctrl, 0, layout.RowStyles.Count - 1)
+ 
+    info = WF.Label()
+    info.AutoSize = True
+    info.Text = ("Vink per rol het gelinkte model aan waarin de hosts gezocht worden."
+                 + ("\n({} niet-geladen link(s) worden niet getoond.)".format(unloaded)
+                    if unloaded else ""))
+    add_row(info, WF.SizeType.AutoSize)
+ 
+    boxes = []
+    for rule in ROLE_RULES:
+        lbl = WF.Label()
+        lbl.AutoSize = True
+        lbl.Font = SD.Font(lbl.Font, SD.FontStyle.Bold)
+        lbl.Margin = WF.Padding(0, 10, 0, 2)
+        lbl.Text = rule["label"]
+        add_row(lbl, WF.SizeType.AutoSize)
+ 
+        clb = WF.CheckedListBox()
+        clb.Dock = WF.DockStyle.Fill
+        clb.CheckOnClick = True
+        clb.IntegralHeight = False
+        remembered = memory.get(rule["role"]) if memory else None
+        for i, label in enumerate(labels):
+            clb.Items.Add(label)
+            if remembered is not None:
+                checked = label in remembered
+            else:
+                up = names[i].upper()
+                checked = any(h.upper() in up for h in rule["hint"])
+            clb.SetItemChecked(i, checked)
+        add_row(clb, WF.SizeType.Percent, 50)
+        boxes.append((rule, clb))
+ 
+    buttons = WF.FlowLayoutPanel()
+    buttons.FlowDirection = WF.FlowDirection.RightToLeft
+    buttons.Dock = WF.DockStyle.Fill
+    buttons.AutoSize = True
+    buttons.Margin = WF.Padding(0, 10, 0, 0)
+    btn_cancel = WF.Button()
+    btn_cancel.Text = "Annuleren"
+    btn_cancel.DialogResult = WF.DialogResult.Cancel
+    btn_ok = WF.Button()
+    btn_ok.Text = "OK"
+    btn_ok.DialogResult = WF.DialogResult.OK
+    buttons.Controls.Add(btn_cancel)
+    buttons.Controls.Add(btn_ok)
+    add_row(buttons, WF.SizeType.AutoSize)
+ 
+    form.Controls.Add(layout)
+    form.AcceptButton = btn_ok
+    form.CancelButton = btn_cancel
+ 
+    if form.ShowDialog() != WF.DialogResult.OK:
+        return None
+ 
+    result, choice = [], {}
+    for rule, clb in boxes:
+        choice[rule["role"]] = []
+        for i in range(clb.Items.Count):
+            if clb.GetItemChecked(i):
+                result.append((loaded[i], rule))
+                choice[rule["role"]].append(labels[i])
+    save_memory(choice)
+    form.Dispose()
     return result
  
  
@@ -500,13 +650,14 @@ def main():
     host_plan = []
     host_cat_after = {}
     if cfg["run_host_params"]:
-        links = matching_links()
+        links = pick_links()
+        if links is None:  # Annuleren
+            return
         if not links:
             if not ask_yes_no(
-                    "Geen geladen links gevonden die matchen met:\n- {}\n\n"
+                    "Geen (geladen) gelinkt model geselecteerd.\n\n"
                     "Verder zonder host-detectie (alleen Z-waarden{})?"
-                    .format("\n- ".join(r["link_name_contains"] for r in LINK_RULES),
-                            " en nummering" if cfg["run_numbering"] else "")):
+                    .format(" en nummering" if cfg["run_numbering"] else "")):
                 return
  
         for op in openings:
