@@ -10,20 +10,14 @@ import clr
 clr.AddReference("RevitAPI")
 clr.AddReference("RevitAPIUI")
 clr.AddReference("System")
-
-# WPF i.p.v. WinForms: WinForms-vensters (OpenFileDialog, MessageBox, Form, ...)
-# bleken niet betrouwbaar te renderen in deze ingebakken IronPython-omgeving.
-# WPF werkt wel betrouwbaar, omdat Revit zelf op WPF gebouwd is.
-clr.AddReference("PresentationFramework")
-clr.AddReference("PresentationCore")
-clr.AddReference("WindowsBase")
-
+clr.AddReference("System.Windows.Forms")
+clr.AddReference("System.Drawing")
+ 
 from System.Collections.Generic import List
 from Autodesk.Revit import DB
 from Autodesk.Revit.UI import TaskDialog, TaskDialogCommandLinkId, TaskDialogResult
-from System.Windows.Markup import XamlReader
-from System.Windows import Thickness, FontWeights
-from System.Windows.Controls import TextBlock, CheckBox
+import System.Windows.Forms as WF
+import System.Drawing as SD
  
 BIC = DB.BuiltInCategory
 TITLE = "Openings - Host + Nummering"
@@ -371,28 +365,7 @@ def save_memory(choice):
     except Exception:
         pass  # geheugen is een extraatje, nooit een reden om te stoppen
      
-# ---------- Linkkeuze: dialoog (WPF) ----------
-LINK_PICKER_XAML = """
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Height="560" Width="560"
-        WindowStartupLocation="CenterScreen"
-        ResizeMode="CanResize">
-    <DockPanel Margin="14">
-        <TextBlock x:Name="InfoLabel" DockPanel.Dock="Top" TextWrapping="Wrap" Margin="0,0,0,10"/>
-        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal"
-                    HorizontalAlignment="Right" Margin="0,12,0,0">
-            <Button x:Name="OkButton" Content="OK" Width="90" Height="28" Margin="0,0,8,0"/>
-            <Button x:Name="CancelButton" Content="Annuleren" Width="90" Height="28"/>
-        </StackPanel>
-        <ScrollViewer VerticalScrollBarVisibility="Auto">
-            <StackPanel x:Name="ContentPanel" />
-        </ScrollViewer>
-    </DockPanel>
-</Window>
-"""
-
-
+# ---------- Linkkeuze: dialoog ----------
 def pick_links():
     """Laat de gebruiker per rol links kiezen.
     Geeft [(linkinstance, regel), ...] terug, of None bij Annuleren."""
@@ -405,75 +378,99 @@ def pick_links():
     if not loaded:
         return []
     loaded.sort(key=lambda li: link_file_name(li).lower())
-
+ 
     # Label per link; bij meerdere instances van dezelfde link het ID erbij
     names = [link_file_name(li) for li in loaded]
     labels = []
     for li, n in zip(loaded, names):
         labels.append(n if names.count(n) == 1
                       else u"{}  (instance {})".format(n, id_value(li.Id)))
-
+ 
     memory = load_memory()  # {"STRUCTURE": [labels], ...} of None
-
-    window = XamlReader.Parse(LINK_PICKER_XAML)
-    window.Title = TITLE + " - gelinkte modellen"
-    info_label = window.FindName("InfoLabel")
-    content_panel = window.FindName("ContentPanel")
-    ok_button = window.FindName("OkButton")
-    cancel_button = window.FindName("CancelButton")
-
-    info_label.Text = ("Vink per rol het gelinkte model aan waarin de hosts gezocht worden."
-                        + ("\n({} niet-geladen link(s) worden niet getoond.)".format(unloaded)
-                           if unloaded else ""))
-
-    role_checkboxes = []  # [(regel, [checkbox, ...]), ...] - zelfde volgorde als 'labels'
+ 
+    form = WF.Form()
+    form.Text = TITLE + " - gelinkte modellen"
+    form.StartPosition = WF.FormStartPosition.CenterScreen
+    form.AutoScaleMode = WF.AutoScaleMode.Dpi
+    form.Size = SD.Size(560, 520)
+    form.MinimumSize = SD.Size(420, 380)
+    form.MinimizeBox = False
+    form.MaximizeBox = False
+    form.ShowInTaskbar = False
+    form.TopMost = True
+ 
+    layout = WF.TableLayoutPanel()
+    layout.Dock = WF.DockStyle.Fill
+    layout.Padding = WF.Padding(10)
+    layout.ColumnCount = 1
+ 
+    def add_row(ctrl, size_type, value=0):
+        layout.RowStyles.Add(WF.RowStyle(size_type, value))
+        layout.Controls.Add(ctrl, 0, layout.RowStyles.Count - 1)
+ 
+    info = WF.Label()
+    info.AutoSize = True
+    info.Text = ("Vink per rol het gelinkte model aan waarin de hosts gezocht worden."
+                 + ("\n({} niet-geladen link(s) worden niet getoond.)".format(unloaded)
+                    if unloaded else ""))
+    add_row(info, WF.SizeType.AutoSize)
+ 
+    boxes = []
     for rule in ROLE_RULES:
-        header = TextBlock()
-        header.Text = rule["label"]
-        header.FontWeight = FontWeights.Bold
-        header.Margin = Thickness(0, 10, 0, 2)
-        content_panel.Children.Add(header)
-
+        lbl = WF.Label()
+        lbl.AutoSize = True
+        lbl.Font = SD.Font(lbl.Font, SD.FontStyle.Bold)
+        lbl.Margin = WF.Padding(0, 10, 0, 2)
+        lbl.Text = rule["label"]
+        add_row(lbl, WF.SizeType.AutoSize)
+ 
+        clb = WF.CheckedListBox()
+        clb.Dock = WF.DockStyle.Fill
+        clb.CheckOnClick = True
+        clb.IntegralHeight = False
         remembered = memory.get(rule["role"]) if memory else None
-        checkboxes = []
         for i, label in enumerate(labels):
-            cb = CheckBox()
-            cb.Content = label
-            cb.Margin = Thickness(4, 2, 0, 2)
+            clb.Items.Add(label)
             if remembered is not None:
                 checked = label in remembered
             else:
                 up = names[i].upper()
                 checked = any(h.upper() in up for h in rule["hint"])
-            cb.IsChecked = checked
-            content_panel.Children.Add(cb)
-            checkboxes.append(cb)
-        role_checkboxes.append((rule, checkboxes))
-
-    def on_ok(sender, args):
-        window.DialogResult = True
-        window.Close()
-
-    def on_cancel(sender, args):
-        window.DialogResult = False
-        window.Close()
-
-    ok_button.Click += on_ok
-    cancel_button.Click += on_cancel
-
-    dialog_result = window.ShowDialog()
-
-    if not dialog_result:
+            clb.SetItemChecked(i, checked)
+        add_row(clb, WF.SizeType.Percent, 50)
+        boxes.append((rule, clb))
+ 
+    buttons = WF.FlowLayoutPanel()
+    buttons.FlowDirection = WF.FlowDirection.RightToLeft
+    buttons.Dock = WF.DockStyle.Fill
+    buttons.AutoSize = True
+    buttons.Margin = WF.Padding(0, 10, 0, 0)
+    btn_cancel = WF.Button()
+    btn_cancel.Text = "Annuleren"
+    btn_cancel.DialogResult = WF.DialogResult.Cancel
+    btn_ok = WF.Button()
+    btn_ok.Text = "OK"
+    btn_ok.DialogResult = WF.DialogResult.OK
+    buttons.Controls.Add(btn_cancel)
+    buttons.Controls.Add(btn_ok)
+    add_row(buttons, WF.SizeType.AutoSize)
+ 
+    form.Controls.Add(layout)
+    form.AcceptButton = btn_ok
+    form.CancelButton = btn_cancel
+ 
+    if form.ShowDialog() != WF.DialogResult.OK:
         return None
-
+ 
     result, choice = [], {}
-    for rule, checkboxes in role_checkboxes:
+    for rule, clb in boxes:
         choice[rule["role"]] = []
-        for i, cb in enumerate(checkboxes):
-            if cb.IsChecked:
+        for i in range(clb.Items.Count):
+            if clb.GetItemChecked(i):
                 result.append((loaded[i], rule))
                 choice[rule["role"]].append(labels[i])
     save_memory(choice)
+    form.Dispose()
     return result
  
  
@@ -794,4 +791,5 @@ def main():
  
  
 main()
+ 
  
