@@ -44,7 +44,7 @@ CONFIG = {
     "clear_when_no_host": False,
  
     # ---- Stap 2: nummering ----
-    "param_discipline": "DEF_CTE_Discipline",
+    "param_discipline": "DBU_CTE_Discipline",
     "param_level": "DEF_CTE_Niveau",
     "param_mark": "Mark",  # -> ingebouwde Mark-parameter
     "separator": "-",
