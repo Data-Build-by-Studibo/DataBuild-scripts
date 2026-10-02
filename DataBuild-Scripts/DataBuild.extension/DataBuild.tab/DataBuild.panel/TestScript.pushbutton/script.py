@@ -23,8 +23,6 @@ BIC = DB.BuiltInCategory
 TITLE = "Openings - Host + Nummering"
  
 # --------------------------------------------------------------------------
-# CONFIG - pas hier aan per bureaustandaard, niet per project
-# --------------------------------------------------------------------------
 CONFIG = {
     # Welke stappen uitvoeren
     "run_host_params": True,
@@ -101,12 +99,6 @@ CATEGORY_CODES = {
  
 cfg = CONFIG
  
- 
-# --------------------------------------------------------------------------
-# HOST-KOPPELING - hoe krijgt het script het actieve document?
-# Zoekt naar de variabelen die de plug-in meestuurt (pyRevit-conventie
-# __revit__, of uidoc / doc / uiapp). Weet je hoe jullie plug-in dit doet,
-# dan mag je dit vereenvoudigen tot 1 regel.
 # --------------------------------------------------------------------------
 def _find_context():
     try:
@@ -139,10 +131,6 @@ def _find_context():
  
  
 uidoc, doc = _find_context()
- 
- 
-# --------------------------------------------------------------------------
-# UI (vervangt pyrevit.forms)
 # --------------------------------------------------------------------------
 def alert(msg, details=None):
     td = TaskDialog(TITLE)
@@ -169,10 +157,6 @@ def select_elements(elements):
     for e in elements:
         ids.Add(e.Id)
     uidoc.Selection.SetElementIds(ids)
- 
- 
-# --------------------------------------------------------------------------
-# Algemene hulpfuncties
 # --------------------------------------------------------------------------
 def id_value(eid):
     """ElementId -> int (Revit 2024+ .Value, oudere versies .IntegerValue)."""
@@ -270,10 +254,6 @@ def set_param(element, name, text, internal_value=None):
     except Exception as ex:
         return "parameter '{}': {}".format(name, ex)
     return None
- 
- 
-# --------------------------------------------------------------------------
-# Geometrie
 # --------------------------------------------------------------------------
 GEOM_OPTIONS = DB.Options()
 GEOM_OPTIONS.DetailLevel = DB.ViewDetailLevel.Fine
@@ -319,10 +299,6 @@ def max_overlap(solids_a, solids_b):
             except Exception:
                 pass
     return best
- 
- 
-# --------------------------------------------------------------------------
-# Links
 # --------------------------------------------------------------------------
 def to_category_list(bics):
     lst = List[BIC]()
@@ -357,7 +333,6 @@ def passes_rule(element, rule):
         if any(w in wname for w in rule["exclude_workset_contains"]):
             return False
     return True
- 
  
 # ---------- Linkkeuze: geheugen per project ----------
 def project_key():
@@ -394,8 +369,7 @@ def save_memory(choice):
             f.write(u"{}".format(json.dumps(data, indent=2)))
     except Exception:
         pass  # geheugen is een extraatje, nooit een reden om te stoppen
- 
- 
+     
 # ---------- Linkkeuze: dialoog ----------
 def pick_links():
     """Laat de gebruiker per rol links kiezen.
@@ -530,10 +504,7 @@ def find_best_host(opening_solids, opening_bb, links):
             if vol > cfg["min_intersection_volume"] and (best is None or vol > best[0]):
                 best = (vol, el, li)
     return best
- 
- 
-# --------------------------------------------------------------------------
-# Niveau, Z-waarde en nummering
+
 # --------------------------------------------------------------------------
 def get_level(element):
     lid = element.LevelId
@@ -570,10 +541,6 @@ def extract_number(mark, sep, position):
  
 def format_number(number, padding):
     return str(number).zfill(padding) if padding > 0 else str(number)
- 
- 
-# --------------------------------------------------------------------------
-# Rapport (vervangt het pyRevit-outputvenster): CSV in %TEMP%
 # --------------------------------------------------------------------------
 def write_report(openings, host_plan, number_plan, skipped, errors):
     by_id = {}
@@ -608,10 +575,6 @@ def write_report(openings, host_plan, number_plan, skipped, errors):
             vals.append(u" | ".join(r["fouten"]).replace(";", ","))
             f.write(u";".join(vals) + u"\n")
     return path
- 
- 
-# ==========================================================================
-# MAIN
 # ==========================================================================
 def main():
     if not (cfg["run_host_params"] or cfg["run_numbering"]):
