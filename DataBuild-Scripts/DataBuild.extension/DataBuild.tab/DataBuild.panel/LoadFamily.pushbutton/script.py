@@ -23,7 +23,7 @@ FAMILY_PICKER_XAML = """
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Data Build - Familie laden"
-        Height="420" Width="380"
+        Height="420" Width="500"
         WindowStartupLocation="CenterScreen"
         ResizeMode="CanResize">
     <DockPanel Margin="14">
