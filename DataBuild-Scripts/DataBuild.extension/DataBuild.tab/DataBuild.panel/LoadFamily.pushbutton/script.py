@@ -1,19 +1,5 @@
 # -*- coding: utf-8 -*-
 
-__title__ = "Load Family"
-__author__ = "Data Build"
-__doc__ = """Version = 1.0
-Date    = 22-09-26
-_____________________________________________________________________
-Description:
-
-Toont een lijst van alle .rfa-families die in de GitHub-map "Families"
-staan, laat de gebruiker er een kiezen, en laadt die familie in het
-actieve Revit-project - vergelijkbaar met Revit's eigen "Load Family"-knop,
-maar dan rechtstreeks vanuit de gedeelde Data Build-bibliotheek op GitHub.
-_____________________________________________________________________
-"""
-
 #-----------------------IMPORTS-------------------------------------------------------
 
 import clr
