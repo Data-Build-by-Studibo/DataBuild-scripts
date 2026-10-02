@@ -21,7 +21,6 @@ import System.Drawing as SD
  
 BIC = DB.BuiltInCategory
 TITLE = "Openings - Host + Nummering"
- 
 # --------------------------------------------------------------------------
 CONFIG = {
     # Welke stappen uitvoeren
@@ -58,10 +57,7 @@ CONFIG = {
     # Eerst samenvatting tonen en om bevestiging vragen
     "ask_confirmation": True,
 }
- 
-# Rollen voor gelinkte modellen. De gebruiker kiest per rol welke link(s)
-# erbij horen. 'hint' = tekst in de linknaam die de eerste keer automatisch
-# aangevinkt wordt (daarna onthoudt het script de keuze per project).
+
 ROLE_RULES = [
     {
         "role": "STRUCTURE",
@@ -98,7 +94,6 @@ CATEGORY_CODES = {
 }
  
 cfg = CONFIG
- 
 # --------------------------------------------------------------------------
 def _find_context():
     try:
