@@ -1,8 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
-Testscript voor de Data Build plugin.
-__revit__ is automatisch beschikbaar en bevat de Revit UIApplication.
-"""
+
 from Autodesk.Revit.UI import TaskDialog
 
 uiapp = __revit__
