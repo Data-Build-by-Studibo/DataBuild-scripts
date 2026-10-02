@@ -58,7 +58,7 @@ CONFIG = {
  
 LINK_RULES = [
     {
-        "link_name_contains": "STRUCTURE",
+        "link_name_contains": "STR",
         "categories": [BIC.OST_Walls, BIC.OST_StructuralFraming,
                        BIC.OST_StructuralColumns, BIC.OST_StructuralFoundation,
                        BIC.OST_Floors],
@@ -66,7 +66,7 @@ LINK_RULES = [
         "exclude_workset_contains": [],
     },
     {
-        "link_name_contains": "ARCHITECTURE",
+        "link_name_contains": "ARC",
         "categories": [BIC.OST_Walls, BIC.OST_StructuralFraming,
                        BIC.OST_StructuralColumns, BIC.OST_GenericModel],
         "exclude_type_name_contains": [],
