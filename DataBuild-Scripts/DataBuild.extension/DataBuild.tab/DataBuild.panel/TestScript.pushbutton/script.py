@@ -32,7 +32,7 @@ CONFIG = {
  
     # Sparingen in het actieve model
     "opening_category": BIC.OST_GenericModel,
-    "opening_family_filter": "DBU_Opening",
+    "opening_family_filter": "DBU_GM_UN_Opening",
  
     # ---- Gedeeld: stap 1 schrijft, stap 2 leest ----
     "param_host_category": "DBU_CTE_Opening Host Category",
