@@ -45,7 +45,7 @@ CONFIG = {
  
     # ---- Stap 2: nummering ----
     "param_discipline": "DBU_CTE_Discipline",
-    "param_level": "DEF_CTE_Niveau",
+    "param_level": "DBU_CTE_BuildingPart",
     "param_mark": "Mark",  # -> ingebouwde Mark-parameter
     "separator": "-",
     "numbered_regex": r"^[A-Za-z]+-.+-[A-Za-z]+-.+$",
