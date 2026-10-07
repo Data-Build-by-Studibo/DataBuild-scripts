@@ -21,6 +21,7 @@ import System.Drawing as SD
  
 BIC = DB.BuiltInCategory
 TITLE = "Openings - Host + Nummering"
+ 
 # --------------------------------------------------------------------------
 CONFIG = {
     # Welke stappen uitvoeren
@@ -57,15 +58,18 @@ CONFIG = {
     # Eerst samenvatting tonen en om bevestiging vragen
     "ask_confirmation": True,
 }
+ 
+# Rollen voor gelinkte modellen. De gebruiker kiest per rol welke link(s)
+# erbij horen. 'hint' = tekst in de linknaam die de eerste keer automatisch
+# aangevinkt wordt (daarna onthoudt het script de keuze per project).
+# Enkel deze categorieen kunnen host zijn (in alle gekozen links)
+HOST_CATEGORIES = [BIC.OST_Walls, BIC.OST_Floors]
 
 ROLE_RULES = [
     {
         "role": "STRUCTURE",
         "label": "Structuurmodel(len)",
         "hint": ["STRUCTURE", "STAB", "STR"],
-        "categories": [BIC.OST_Walls, BIC.OST_StructuralFraming,
-                       BIC.OST_StructuralColumns, BIC.OST_StructuralFoundation,
-                       BIC.OST_Floors],
         "exclude_type_name_contains": ["Secant"],
         "exclude_workset_contains": [],
     },
@@ -73,8 +77,6 @@ ROLE_RULES = [
         "role": "ARCHITECTURE",
         "label": "Architectuurmodel(len)",
         "hint": ["ARCHITECTURE", "ARCH", "ARC"],
-        "categories": [BIC.OST_Walls, BIC.OST_StructuralFraming,
-                       BIC.OST_StructuralColumns, BIC.OST_GenericModel],
         "exclude_type_name_contains": [],
         "exclude_workset_contains": [u"Stabilité"],
     },
@@ -94,6 +96,7 @@ CATEGORY_CODES = {
 }
  
 cfg = CONFIG
+ 
 # --------------------------------------------------------------------------
 def _find_context():
     try:
@@ -282,18 +285,21 @@ def transform_bbox(bb, transform):
             DB.XYZ(max(p.X for p in tp), max(p.Y for p in tp), max(p.Z for p in tp)))
  
  
-def max_overlap(solids_a, solids_b):
-    best = 0.0
+def overlap_volume(solids_a, solids_b):
+    """Totaal volume (ft3) dat de sparing met een element deelt.
+    Alle solid-paren worden opgeteld, zodat een element dat uit meerdere
+    solids bestaat (bv. gelaagde wand) eerlijk vergeleken wordt."""
+    total = 0.0
     for a in solids_a:
         for b in solids_b:
             try:
                 inter = DB.BooleanOperationsUtils.ExecuteBooleanOperation(
                     a, b, DB.BooleanOperationsType.Intersect)
-                if inter is not None and inter.Volume > best:
-                    best = inter.Volume
+                if inter is not None and inter.Volume > 0:
+                    total += inter.Volume
             except Exception:
                 pass
-    return best
+    return total
 # --------------------------------------------------------------------------
 def to_category_list(bics):
     lst = List[BIC]()
@@ -481,7 +487,7 @@ def find_best_host(opening_solids, opening_bb, links):
         transform = li.GetTotalTransform()
         mn, mx = transform_bbox(opening_bb, transform.Inverse)
         bb_filter = DB.BoundingBoxIntersectsFilter(DB.Outline(mn, mx))
-        cat_filter = DB.ElementMulticategoryFilter(to_category_list(rule["categories"]))
+        cat_filter = DB.ElementMulticategoryFilter(to_category_list(HOST_CATEGORIES))
         candidates = (DB.FilteredElementCollector(link_doc)
                       .WherePasses(cat_filter)
                       .WherePasses(bb_filter)
@@ -495,7 +501,7 @@ def find_best_host(opening_solids, opening_bb, links):
                     link_solids.append(DB.SolidUtils.CreateTransformed(s, transform))
                 except Exception:
                     pass
-            vol = max_overlap(opening_solids, link_solids)
+            vol = overlap_volume(opening_solids, link_solids)
             if vol > cfg["min_intersection_volume"] and (best is None or vol > best[0]):
                 best = (vol, el, li)
     return best
@@ -791,5 +797,3 @@ def main():
  
  
 main()
- 
- 
