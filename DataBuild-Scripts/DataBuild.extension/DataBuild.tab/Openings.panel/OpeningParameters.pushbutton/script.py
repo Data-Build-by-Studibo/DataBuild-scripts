@@ -408,7 +408,7 @@ def pick_links():
     form.Text = TITLE + " - gelinkte modellen"
     form.StartPosition = WF.FormStartPosition.CenterScreen
     form.AutoScaleMode = WF.AutoScaleMode.Dpi
-    form.Size = SD.Size(560, 520)
+    form.Size = SD.Size(560, 560)
     form.MinimumSize = SD.Size(420, 380)
     form.MinimizeBox = False
     form.MaximizeBox = False
