@@ -58,7 +58,7 @@ CONFIG = {
     "separator": "-",
     "numbered_regex": r"^[A-Za-z]+-.+-[A-Za-z]+-.+$",
     "number_position": 3,  # D-N-H-[3]
-    "number_padding": 0,   # 0 = 1, 2, ...   3 = 001, 002, ...
+    "number_padding": 2,   # 0 = 1, 2, ...   3 = 001, 002, ...
     # Dubbele Marks (bv. door kopieren): de oudste sparing (laagste ID)
     # houdt de Mark, de kopieen krijgen een nieuw nummer
     "renumber_duplicates": True,
