@@ -1,0 +1,5 @@
+# Openings.panel/bundle.yaml
+title: Openings
+layout:
+  - ClashId
+  - OpeningParameters
