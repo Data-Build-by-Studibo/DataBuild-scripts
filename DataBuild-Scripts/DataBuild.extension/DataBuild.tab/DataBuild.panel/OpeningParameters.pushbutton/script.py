@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-
+ 
 import io
 import json
 import os
@@ -27,6 +27,9 @@ CONFIG = {
     # Welke stappen uitvoeren
     "run_host_params": True,
     "run_numbering": True,
+    # Hoogtewaarden: secundair spoor (afgewerkt vloerpeil onbetrouwbaar,
+    # statische waarden kloppen niet na verplaatsing) -> standaard uit
+    "run_z_values": False,
  
     # Sparingen in het actieve model
     "opening_category": BIC.OST_GenericModel,
@@ -44,7 +47,9 @@ CONFIG = {
     "rectangular_filter": "Rectangular",
     "param_height": "Element Height",
     "min_intersection_volume": 1e-4,   # ft3
-    "clear_when_no_host": False,
+    # Host-parameters zijn kritisch en worden bij ELKE run overschreven:
+    # geen host gevonden = parameters leegmaken (geen oude waarden laten staan)
+    "clear_when_no_host": True,
  
     # ---- Stap 2: nummering ----
     "param_discipline": "DBU_CTE_Discipline",
@@ -54,6 +59,9 @@ CONFIG = {
     "numbered_regex": r"^[A-Za-z]+-.+-[A-Za-z]+-.+$",
     "number_position": 3,  # D-N-H-[3]
     "number_padding": 0,   # 0 = 1, 2, ...   3 = 001, 002, ...
+    # Dubbele Marks (bv. door kopieren): de oudste sparing (laagste ID)
+    # houdt de Mark, de kopieen krijgen een nieuw nummer
+    "renumber_duplicates": True,
  
     # Eerst samenvatting tonen en om bevestiging vragen
     "ask_confirmation": True,
@@ -64,10 +72,11 @@ CONFIG = {
 # aangevinkt wordt (daarna onthoudt het script de keuze per project).
 # Enkel deze categorieen kunnen host zijn (in alle gekozen links)
 HOST_CATEGORIES = [BIC.OST_Walls, BIC.OST_Floors]
-
+ 
 ROLE_RULES = [
     {
         "role": "STRUCTURE",
+        "enabled": True,
         "label": "Structuurmodel(len)",
         "hint": ["STRUCTURE", "STAB", "STR"],
         "exclude_type_name_contains": ["Secant"],
@@ -75,6 +84,7 @@ ROLE_RULES = [
     },
     {
         "role": "ARCHITECTURE",
+        "enabled": False,   # later: eerst focus op stabiliteit als host
         "label": "Architectuurmodel(len)",
         "hint": ["ARCHITECTURE", "ARCH", "ARC"],
         "exclude_type_name_contains": [],
@@ -422,7 +432,7 @@ def pick_links():
     add_row(info, WF.SizeType.AutoSize)
  
     boxes = []
-    for rule in ROLE_RULES:
+    for rule in [r for r in ROLE_RULES if r.get("enabled", True)]:
         lbl = WF.Label()
         lbl.AutoSize = True
         lbl.Font = SD.Font(lbl.Font, SD.FontStyle.Bold)
@@ -480,32 +490,87 @@ def pick_links():
     return result
  
  
-def find_best_host(opening_solids, opening_bb, links):
-    best = None  # (volume, element, linkinstance)
-    for li, rule in links:
-        link_doc = li.GetLinkDocument()
-        transform = li.GetTotalTransform()
-        mn, mx = transform_bbox(opening_bb, transform.Inverse)
-        bb_filter = DB.BoundingBoxIntersectsFilter(DB.Outline(mn, mx))
-        cat_filter = DB.ElementMulticategoryFilter(to_category_list(HOST_CATEGORIES))
-        candidates = (DB.FilteredElementCollector(link_doc)
-                      .WherePasses(cat_filter)
-                      .WherePasses(bb_filter)
-                      .WhereElementIsNotElementType())
-        for el in candidates:
+def bboxes_overlap(mn1, mx1, mn2, mx2):
+    return (mn1.X <= mx2.X and mx1.X >= mn2.X and
+            mn1.Y <= mx2.Y and mx1.Y >= mn2.Y and
+            mn1.Z <= mx2.Z and mx1.Z >= mn2.Z)
+ 
+ 
+class LinkIndex(object):
+    """Alles wat per link maar 1x berekend moet worden:
+    - welke wanden/vloeren geldig zijn (uitsluitingen 1x toegepast)
+    - de omhullende box van die elementen (snelle link-filter)
+    - getransformeerde solids per element (cache, hergebruikt per sparing)"""
+ 
+    def __init__(self, link_inst, rule):
+        self.li = link_inst
+        self.rule = rule
+        self.doc = link_inst.GetLinkDocument()
+        self.transform = link_inst.GetTotalTransform()
+        self.inverse = self.transform.Inverse
+        self.name = link_file_name(link_inst)
+        self.cat_filter = DB.ElementMulticategoryFilter(to_category_list(HOST_CATEGORIES))
+        self.valid_ids = set()
+        self._solids = {}
+        self.extent = None  # (min, max) in link-coordinaten
+ 
+        mn = mx = None
+        for el in (DB.FilteredElementCollector(self.doc)
+                   .WherePasses(self.cat_filter)
+                   .WhereElementIsNotElementType()):
             if not passes_rule(el, rule):
                 continue
-            link_solids = []
-            for s in get_solids(el):
+            bb = el.get_BoundingBox(None)
+            if bb is None:
+                continue
+            self.valid_ids.add(id_value(el.Id))
+            if mn is None:
+                mn, mx = bb.Min, bb.Max
+            else:
+                mn = DB.XYZ(min(mn.X, bb.Min.X), min(mn.Y, bb.Min.Y), min(mn.Z, bb.Min.Z))
+                mx = DB.XYZ(max(mx.X, bb.Max.X), max(mx.Y, bb.Max.Y), max(mx.Z, bb.Max.Z))
+        if mn is not None:
+            self.extent = (mn, mx)
+ 
+    def solids(self, el):
+        key = id_value(el.Id)
+        if key not in self._solids:
+            lst = []
+            for sol in get_solids(el):
                 try:
-                    link_solids.append(DB.SolidUtils.CreateTransformed(s, transform))
+                    lst.append(DB.SolidUtils.CreateTransformed(sol, self.transform))
                 except Exception:
                     pass
-            vol = overlap_volume(opening_solids, link_solids)
+            self._solids[key] = lst
+        return self._solids[key]
+ 
+    def candidates(self, opening_bb):
+        """Stap 1: valt de sparing binnen deze link? Stap 2: welke elementen."""
+        if self.extent is None:
+            return []
+        mn, mx = transform_bbox(opening_bb, self.inverse)
+        if not bboxes_overlap(mn, mx, self.extent[0], self.extent[1]):
+            return []
+        bb_filter = DB.BoundingBoxIntersectsFilter(DB.Outline(mn, mx))
+        return [el for el in DB.FilteredElementCollector(self.doc)
+                .WherePasses(self.cat_filter)
+                .WherePasses(bb_filter)
+                .WhereElementIsNotElementType()
+                if id_value(el.Id) in self.valid_ids]
+ 
+ 
+def find_best_host(opening_solids, opening_bb, link_indexes):
+    """Element met het grootste totale snijvolume over alle links
+    (zelfde principe als het BFTC-intersectiescript)."""
+    best = None  # (volume, element, LinkIndex)
+    for idx in link_indexes:
+        for el in idx.candidates(opening_bb):
+            vol = overlap_volume(opening_solids, idx.solids(el))
             if vol > cfg["min_intersection_volume"] and (best is None or vol > best[0]):
-                best = (vol, el, li)
+                best = (vol, el, idx)
     return best
-
+ 
+ 
 # --------------------------------------------------------------------------
 def get_level(element):
     lid = element.LevelId
@@ -543,65 +608,49 @@ def extract_number(mark, sep, position):
 def format_number(number, padding):
     return str(number).zfill(padding) if padding > 0 else str(number)
 # --------------------------------------------------------------------------
-def write_report(openings, host_plan, number_plan, skipped, errors):
-    by_id = {}
-    for e in openings:
-        by_id[id_value(e.Id)] = {"id": str(id_value(e.Id)), "fouten": []}
-    for p in host_plan:
-        r = by_id[id_value(p["el"].Id)]
-        h = p["host"] or {}
-        r["cat"] = h.get("category", "")
-        r["host_el"] = h.get("element", "")
-        r["link"] = h.get("link", "")
-        r["host_id"] = h.get("id", "")
-        r["z_param"] = (p["z_param"] or "").replace("DBU_CTE_", "")
-        r["z"] = str(int(round(to_display(p["z_ft"])))) if p["z_param"] else ""
-    for e, old, new in number_plan:
-        r = by_id[id_value(e.Id)]
-        r["oud"], r["nieuw"] = old, new
-    for e in skipped:
-        by_id[id_value(e.Id)]["fouten"].append("niet genummerd: lege parameters")
-    for e, err in errors:
-        by_id[id_value(e.Id)]["fouten"].append(err)
- 
+def write_report(openings, rows):
+    """rows: id -> dict met kolomwaarden en lijst 'notes'."""
     cols = [("id", "Element ID"), ("cat", "Host Cat."), ("host_el", "Host element"),
-            ("link", "Link"), ("host_id", "Host ID"), ("z_param", "Z-param"),
-            ("z", "Z"), ("oud", "Oude Mark"), ("nieuw", "Nieuwe Mark")]
+            ("link", "Link"), ("host_id", "Host ID"),
+            ("disc", "Discipline"), ("lvl", "BuildingPart"),
+            ("z_param", "Z-param"), ("z", "Z"),
+            ("oud", "Oude Mark"), ("nieuw", "Nieuwe Mark")]
     path = os.path.join(tempfile.gettempdir(), "Openings_rapport.csv")
     with io.open(path, "w", encoding="utf-8-sig") as f:
         f.write(u";".join([c[1] for c in cols] + [u"Opmerking"]) + u"\n")
-        for key in sorted(by_id):
-            r = by_id[key]
-            vals = [u"{}".format(r.get(c[0], "")).replace(";", ",") for c in cols]
-            vals.append(u" | ".join(r["fouten"]).replace(";", ","))
+        for e in openings:
+            r = rows[id_value(e.Id)]
+            vals = [u"{}".format(r.get(c[0], "") or "").replace(";", ",") for c in cols]
+            vals.append(u" | ".join(r["notes"]).replace(";", ","))
             f.write(u";".join(vals) + u"\n")
     return path
-# ==========================================================================
+ 
+ 
 def main():
-    if not (cfg["run_host_params"] or cfg["run_numbering"]):
-        alert("Beide stappen staan uit in CONFIG.")
+    if not (cfg["run_host_params"] or cfg["run_numbering"] or cfg["run_z_values"]):
+        alert("Alle stappen staan uit in CONFIG.")
         return
  
-    # ---------------- 0. Sparingen ophalen ----------------
+    p_disc, p_lvl = cfg["param_discipline"], cfg["param_level"]
+ 
+    # ================= 0. Sparingen ophalen =================
     openings = [e for e in DB.FilteredElementCollector(doc)
                 .OfCategory(cfg["opening_category"])
                 .WhereElementIsNotElementType()
                 if cfg["opening_family_filter"] in family_and_type_name(e)]
-    openings.sort(key=lambda e: id_value(e.Id))
- 
+    openings.sort(key=lambda e: id_value(e.Id))  # laagste ID = origineel
     if not openings:
         alert("Geen sparingen gevonden met '{}' in familie- of typenaam."
               .format(cfg["opening_family_filter"]))
         return
  
-    needed = []
+    needed = [p_disc, p_lvl]
+    if cfg["run_host_params"] or cfg["run_numbering"]:
+        needed += [cfg["param_host_category"]]
     if cfg["run_host_params"]:
-        needed += [cfg[k] for k in ("param_host_category", "param_host_element",
-                                    "param_host_link", "param_host_id",
-                                    "param_z_top", "param_z_center")]
-    if cfg["run_numbering"]:
-        needed += [cfg[k] for k in ("param_discipline", "param_level",
-                                    "param_host_category")]
+        needed += [cfg["param_host_element"], cfg["param_host_link"], cfg["param_host_id"]]
+    if cfg["run_z_values"]:
+        needed += [cfg["param_z_top"], cfg["param_z_center"]]
     seen = set()
     needed = [n for n in needed if not (n in seen or seen.add(n))]
     missing = [n for n in needed if get_param(openings[0], n) is None]
@@ -610,60 +659,83 @@ def main():
               .format("\n- ".join(missing)))
         return
  
-    # ---------------- 1. Analyse host + Z ----------------
+    rows = dict((id_value(e.Id), {"id": str(id_value(e.Id)), "notes": []})
+                for e in openings)
+ 
+    # ================= CONTROLE A: Discipline + BuildingPart (manueel) =========
+    missing_dl = []
+    for e in openings:
+        r = rows[id_value(e.Id)]
+        r["disc"] = get_value(e, p_disc)
+        r["lvl"] = get_value(e, p_lvl)
+        empty = [n for n, v in ((p_disc, r["disc"]), (p_lvl, r["lvl"])) if not v]
+        if empty:
+            missing_dl.append(e)
+            r["notes"].append("manueel invullen: " + ", ".join(empty))
+ 
+    # ================= 1. Host (+ optioneel Z) =================
     host_plan = []
     host_cat_after = {}
-    if cfg["run_host_params"]:
-        links = pick_links()
-        if links is None:  # Annuleren
-            return
-        if not links:
-            if not ask_yes_no(
-                    "Geen (geladen) gelinkt model geselecteerd.\n\n"
-                    "Verder zonder host-detectie (alleen Z-waarden{})?"
-                    .format(" en nummering" if cfg["run_numbering"] else "")):
+    if cfg["run_host_params"] or cfg["run_z_values"]:
+        link_indexes = []
+        if cfg["run_host_params"]:
+            links = pick_links()
+            if links is None:
                 return
+            if not links:
+                if not ask_yes_no("Geen (geladen) gelinkt model geselecteerd.\n\n"
+                                  "Verder zonder host-detectie?"):
+                    return
+            link_indexes = [LinkIndex(li, rule) for li, rule in links]
  
         for op in openings:
             item = {"el": op, "host": None, "z_param": None, "z_ft": None}
+            r = rows[id_value(op.Id)]
  
-            bb = op.get_BoundingBox(None)
-            solids = get_solids(op)
-            if links and bb is not None and solids:
-                best = find_best_host(solids, bb, links)
-                if best is not None:
-                    _, host_el, li = best
-                    cat = host_el.Category
-                    code = CODE_BY_CAT_ID.get(id_value(cat.Id), cat.Name) if cat else ""
-                    item["host"] = {
-                        "category": code,
-                        "element": get_name(host_el),
-                        "link": link_file_name(li),
-                        "id": str(id_value(host_el.Id)),
-                    }
+            if link_indexes:
+                bb = op.get_BoundingBox(None)
+                solids = get_solids(op)
+                if bb is not None and solids:
+                    best = find_best_host(solids, bb, link_indexes)
+                    if best is not None:
+                        _, host_el, idx = best
+                        cat = host_el.Category
+                        code = CODE_BY_CAT_ID.get(id_value(cat.Id), cat.Name) if cat else ""
+                        item["host"] = {"category": code,
+                                        "element": get_name(host_el),
+                                        "link": idx.name,
+                                        "id": str(id_value(host_el.Id))}
+                if cfg["run_host_params"]:
+                    if item["host"]:
+                        host_cat_after[id_value(op.Id)] = item["host"]["category"]
+                        r["cat"] = item["host"]["category"]
+                        r["host_el"] = item["host"]["element"]
+                        r["link"] = item["host"]["link"]
+                        r["host_id"] = item["host"]["id"]
+                    else:
+                        r["notes"].append("geen host gevonden")
+                        if cfg["clear_when_no_host"]:
+                            host_cat_after[id_value(op.Id)] = ""
  
-            loc = op.Location
-            lvl = get_level(op)
-            if isinstance(loc, DB.LocationPoint) and lvl is not None:
-                z = loc.Point.Z - lvl.ProjectElevation
-                if cfg["rectangular_filter"] in family_and_type_name(op):
-                    item["z_param"] = cfg["param_z_top"]
-                    item["z_ft"] = z + get_height(op) / 2.0
-                else:
-                    item["z_param"] = cfg["param_z_center"]
-                    item["z_ft"] = z
- 
-            if item["host"]:
-                host_cat_after[id_value(op.Id)] = item["host"]["category"]
-            elif cfg["clear_when_no_host"]:
-                host_cat_after[id_value(op.Id)] = ""
+            if cfg["run_z_values"]:
+                loc = op.Location
+                lvl = get_level(op)
+                if isinstance(loc, DB.LocationPoint) and lvl is not None:
+                    z = loc.Point.Z - lvl.ProjectElevation
+                    if cfg["rectangular_filter"] in family_and_type_name(op):
+                        item["z_param"] = cfg["param_z_top"]
+                        item["z_ft"] = z + get_height(op) / 2.0
+                    else:
+                        item["z_param"] = cfg["param_z_center"]
+                        item["z_ft"] = z
+                    r["z_param"] = item["z_param"].replace("DBU_CTE_", "")
+                    r["z"] = str(int(round(to_display(item["z_ft"]))))
             host_plan.append(item)
  
     with_host = [p for p in host_plan if p["host"]]
     without_host = [p for p in host_plan if not p["host"]]
-    without_z = [p for p in host_plan if p["z_param"] is None]
  
-    # ---------------- 2. Analyse nummering ----------------
+    # ================= 2. Nummering + CONTROLE B: dubbele Marks =============
     def host_category(e):
         key = id_value(e.Id)
         if key in host_cat_after:
@@ -671,18 +743,32 @@ def main():
             return (val.strip() or None) if val else None
         return get_value(e, cfg["param_host_category"])
  
-    number_plan, numbered, skipped = [], [], []
+    number_plan, numbered, skipped, duplicates = [], [], [], []
     if cfg["run_numbering"]:
         sep = cfg["separator"]
         regex = re.compile(cfg["numbered_regex"])
         to_number = []
-        for e in openings:
+        first_by_mark = {}
+        for e in openings:  # gesorteerd op ID: origineel komt eerst
             mark = get_value(e, cfg["param_mark"])
-            (numbered if mark and regex.match(mark) else to_number).append(e)
+            r = rows[id_value(e.Id)]
+            r["oud"] = mark or ""
+            if mark and regex.match(mark):
+                if mark in first_by_mark:
+                    duplicates.append(e)
+                    r["notes"].append("dubbele Mark (origineel: {})".format(
+                        id_value(first_by_mark[mark].Id)))
+                    if cfg["renumber_duplicates"]:
+                        to_number.append(e)
+                        continue
+                else:
+                    first_by_mark[mark] = e
+                numbered.append(e)
+            else:
+                to_number.append(e)
  
         def group_key(e):
-            return (get_value(e, cfg["param_level"]) or "",
-                    get_value(e, cfg["param_discipline"]) or "")
+            return (get_value(e, p_lvl) or "", get_value(e, p_disc) or "")
  
         max_per_group = {}
         for e in numbered:
@@ -692,11 +778,12 @@ def main():
  
         groups, group_order = {}, []
         for e in to_number:
-            disc = get_value(e, cfg["param_discipline"])
-            lvl = get_value(e, cfg["param_level"])
-            host = host_category(e)
+            r = rows[id_value(e.Id)]
+            disc, lvl, host = r["disc"], r["lvl"], host_category(e)
             if not (disc and lvl and host):
                 skipped.append(e)
+                r["notes"].append("niet genummerd" +
+                                  (" (geen Host Category)" if not host else ""))
                 continue
             key = (lvl, disc)
             if key not in groups:
@@ -710,48 +797,64 @@ def main():
                 counter += 1
                 new_mark = sep.join([disc, lvl, host,
                                      format_number(counter, cfg["number_padding"])])
-                number_plan.append((e, get_value(e, cfg["param_mark"]) or "", new_mark))
+                number_plan.append((e, rows[id_value(e.Id)]["oud"], new_mark))
+                rows[id_value(e.Id)]["nieuw"] = new_mark
  
-    if not host_plan and not number_plan:
-        alert("Niets te doen: alle {} sparingen zijn al genummerd of missen "
-              "Discipline, Niveau of Host Category.".format(len(openings)))
-        return
+    # Eindcontrole: zijn er na deze run nog dubbele Marks?
+    final = {}
+    for e in openings:
+        r = rows[id_value(e.Id)]
+        m = r.get("nieuw") or get_value(e, cfg["param_mark"])
+        if m:
+            final.setdefault(m, []).append(e)
+    remaining_dups = [e for lst in final.values() if len(lst) > 1 for e in lst]
+    for e in remaining_dups:
+        rows[id_value(e.Id)]["notes"].append("BLIJFT DUBBEL na run")
  
-    # ---------------- Bevestigen ----------------
-    lines = ["{} sparingen gevonden.".format(len(openings))]
+    # ================= Samenvatting + bevestigen =================
+    lines = ["{} sparingen gevonden.".format(len(openings)), "",
+             "CONTROLE - manuele parameters",
+             "  Discipline en/of BuildingPart leeg: {}".format(len(missing_dl))]
     if cfg["run_host_params"]:
-        lines += ["", "STAP 1 - Host en Z-waarden",
+        lines += ["", "HOST (wordt altijd overschreven)",
                   "  Host gevonden: {}".format(len(with_host)),
-                  "  Geen host: {}".format(len(without_host)),
-                  "  Geen Z-waarde: {}".format(len(without_z))]
+                  "  Geen host: {}{}".format(len(without_host),
+                                             " (parameters worden leeggemaakt)"
+                                             if cfg["clear_when_no_host"] and without_host
+                                             else "")]
     if cfg["run_numbering"]:
-        lines += ["", "STAP 2 - Nummering",
+        lines += ["", "NUMMERING",
                   "  Al genummerd: {}".format(len(numbered)),
+                  "  Dubbele Marks gevonden: {}{}".format(
+                      len(duplicates),
+                      " (kopieen worden hernummerd)"
+                      if duplicates and cfg["renumber_duplicates"] else ""),
                   "  Worden genummerd: {}".format(len(number_plan)),
-                  "  Overgeslagen (lege parameters): {}".format(len(skipped))]
+                  "  Niet genummerd (lege parameters): {}".format(len(skipped))]
+    if remaining_dups:
+        lines += ["", "LET OP: {} sparingen hebben na deze run nog een dubbele Mark."
+                  .format(len(remaining_dups))]
     summary = "\n".join(lines)
+ 
     if cfg["ask_confirmation"] and not ask_yes_no(summary + "\n\nParameters wegschrijven?"):
         return
  
-    # ---------------- Wegschrijven: 1 transactie ----------------
+    # ================= Wegschrijven: 1 transactie =================
     errors = []
     t = DB.Transaction(doc, "Openings: host-parameters + nummering")
     t.Start()
     try:
         for p in host_plan:
             el, h = p["el"], p["host"]
-            if h:
-                for key, val in (("param_host_category", h["category"]),
-                                 ("param_host_element", h["element"]),
-                                 ("param_host_link", h["link"]),
-                                 ("param_host_id", h["id"])):
-                    err = set_param(el, cfg[key], val)
+            if cfg["run_host_params"] and (h or cfg["clear_when_no_host"]):
+                h = h or {}
+                for key, field in (("param_host_category", "category"),
+                                   ("param_host_element", "element"),
+                                   ("param_host_link", "link"),
+                                   ("param_host_id", "id")):
+                    err = set_param(el, cfg[key], h.get(field, ""))
                     if err:
                         errors.append((el, err))
-            elif cfg["clear_when_no_host"]:
-                for key in ("param_host_category", "param_host_element",
-                            "param_host_link", "param_host_id"):
-                    set_param(el, cfg[key], "")
             if p["z_param"]:
                 text = str(int(round(to_display(p["z_ft"]))))
                 err = set_param(el, p["z_param"], text, p["z_ft"])
@@ -773,13 +876,20 @@ def main():
             t.RollBack()
         raise
  
-    # ---------------- Rapport ----------------
-    report = write_report(openings, host_plan, number_plan, skipped, errors)
-    problems = [e for e, _ in errors] + skipped
+    # ================= Rapport =================
+    for e, err in errors:
+        rows[id_value(e.Id)]["notes"].append("FOUT: " + err)
+    report = write_report(openings, rows)
+ 
+    seen_ids = set()
+    problems = []
+    for e in [x for x, _ in errors] + missing_dl + skipped + remaining_dups:
+        if id_value(e.Id) not in seen_ids:
+            seen_ids.add(id_value(e.Id))
+            problems.append(e)
  
     td = TaskDialog(TITLE)
-    td.MainInstruction = "Klaar - {} fout(en), {} overgeslagen".format(
-        len(errors), len(skipped))
+    td.MainInstruction = "Klaar - {} sparing(en) vragen aandacht".format(len(problems))
     td.MainContent = summary
     if errors:
         td.ExpandedContent = "\n".join("{}  {}".format(id_value(e.Id), err)
@@ -787,7 +897,7 @@ def main():
     td.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, "Rapport openen (CSV)")
     if problems and uidoc is not None:
         td.AddCommandLink(TaskDialogCommandLinkId.CommandLink2,
-                          "Overgeslagen en mislukte sparingen selecteren")
+                          "Sparingen die aandacht vragen selecteren")
     td.AddCommandLink(TaskDialogCommandLinkId.CommandLink3, "Sluiten")
     res = td.Show()
     if res == TaskDialogResult.CommandLink1:
@@ -797,3 +907,4 @@ def main():
  
  
 main()
+ 
