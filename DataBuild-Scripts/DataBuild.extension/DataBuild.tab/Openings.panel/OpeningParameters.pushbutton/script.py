@@ -460,9 +460,9 @@ def pick_links():
     buttons.FlowDirection = WF.FlowDirection.RightToLeft
     buttons.Dock = WF.DockStyle.Fill
     buttons.AutoSize = True
-    buttons.Margin = WF.Padding(10, 10, 0, 10)
+    buttons.Margin = WF.Padding(0, 10, 0, 0)
     btn_cancel = WF.Button()
-    btn_cancel.Text = "Annuleren"
+    btn_cancel.Text = "Cancel"
     btn_cancel.DialogResult = WF.DialogResult.Cancel
     btn_ok = WF.Button()
     btn_ok.Text = "OK"
